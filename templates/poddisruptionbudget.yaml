@@ -1,0 +1,12 @@
+---
+{{- if .Values.maxUnavailable }}
+apiVersion: {{ include "policy.apiVersion" . }}
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "varnish.fullname" . }}
+spec:
+  maxUnavailable: {{ .Values.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "varnish.selectorLabels" . | nindent 6 }}
+{{- end }}

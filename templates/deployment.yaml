@@ -1,0 +1,163 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "varnish.fullname" . }}
+  labels:
+    {{- include "varnish.labels" . | nindent 4 }}
+spec:
+{{- if not .Values.autoscaling.metrics }}
+  replicas: {{ .Values.replicaCount }}
+{{- end }}
+  selector:
+    matchLabels:
+      {{- include "varnish.selectorLabels" . | nindent 6 }}
+  strategy: {{- toYaml .Values.strategy | nindent 4 }}
+  template:
+    metadata:
+      labels:
+        {{- include "varnish.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        app: {{ include "varnish.name" . }}
+        version: {{ .Chart.Version }}
+      annotations:
+      {{- if .Values.vcl }}
+        checksum/vclConfig: {{ include (print $.Template.BasePath "/vcl-configmap.yaml") . | sha256sum }}
+      {{- end }}
+      {{- if .Values.rolloutDeployment }}
+        rollme: {{ randAlphaNum 5 | quote }}
+      {{- end }}
+      {{- if and .Values.prometheus.enabled .Values.prometheus.scrape }}
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "{{ .Values.prometheus.path }}"
+        prometheus.io/port: "{{ .Values.prometheus.port }}"
+      {{- end }}
+      {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+    {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+      serviceAccountName: {{ include "varnish.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: varnishd
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: VARNISH_SIZE
+              value: "{{ .Values.varnishSize }}"
+            - name: VARNISH_HTTP_PORT
+              value: "{{ .Values.varnishListeningPort }}"
+          {{- if .Values.arguments }}
+          args:
+            {{  range .Values.arguments }}
+              - {{ . }}
+            {{ end }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.varnishListeningPort }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if or .Values.logging.enabled .Values.vcl .Values.vclConfigmap .Values.extraVolumeMounts }}
+          volumeMounts:
+          {{- end }}
+          {{- if .Values.logging.enabled }}
+          - name: vsm
+            mountPath: /var/lib/varnish
+          {{- end }}
+          {{- if or .Values.vcl .Values.vclConfigmap }}
+          - name: vcl-configmap
+            mountPath: /etc/varnish
+          {{- end }}
+          {{- if .Values.extraVolumeMounts }}
+          {{- toYaml .Values.extraVolumeMounts | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+        {{- if .Values.logging.enabled }}
+        - name: varnishncsa
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+          - varnishncsa
+          {{- if .Values.logging.customOutput }}
+          - -F
+          - {{ .Values.logging.customOutput | quote }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.logging.resources | nindent 12 }}
+          volumeMounts:
+          - name: vsm
+            mountPath: /var/lib/varnish
+        {{- end }}
+        {{- if .Values.prometheus.enabled }}
+        - name: prometheus-varnish-exporter
+          image: "{{ .Values.prometheus.image.repository }}:{{ .Values.prometheus.image.tag }}"
+          imagePullPolicy: {{ .Values.prometheus.image.pullPolicy }}
+          ports:
+          - name: http
+            containerPort: {{ .Values.prometheus.port }}
+            protocol: TCP
+          resources:
+            {{- toYaml .Values.prometheus.resources | nindent 12 }}
+          command:
+          - prometheus-varnish-exporter
+          - -web.telemetry-path
+          - "{{ .Values.prometheus.path }}"
+          - -web.listen-address
+          - ":{{ .Values.prometheus.port }}"
+          volumeMounts:
+          - name: vsm
+            mountPath: /var/lib/varnish
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- if or .Values.logging.enabled .Values.vcl .Values.vclConfigmap .Values.extraVolumes }}
+      volumes:
+      {{- if .Values.logging.enabled }}
+      - name: vsm
+        emptyDir:
+          medium: Memory
+          {{- if .Values.vsmMemorySizeLimit }}
+          sizeLimit: {{ .Values.vsmMemorySizeLimit }}
+          {{- end }}
+      {{- end }}
+      {{- if or .Values.vcl .Values.vclConfigmap }}
+      - name: vcl-configmap
+        configMap:
+      {{- if .Values.vclConfigmap }}
+          name: {{ .Values.vclConfigmap }}
+      {{ else if .Values.vcl }}
+          name: {{ include "varnish.fullname" . }}
+      {{- end }}
+      {{- end }}
+      {{- if .Values.extraVolumes }}
+        {{- toYaml .Values.extraVolumes | nindent 8 }}
+      {{- end }}
+    {{- end }}
+
